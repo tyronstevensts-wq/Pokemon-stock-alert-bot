@@ -1,0 +1,18 @@
+services:
+  - type: worker
+    name: pokemon-stock-alert-bot
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: CHECK_INTERVAL_SECONDS
+        value: "60"
+      - key: TAKEALOT_SEARCH_URL
+        value: "https://www.takealot.com/all?q={query}"
+      - key: CHECKERS_SEARCH_URL
+        value: "https://www.checkers.co.za/search/all?q={query}"
+      - key: AMAZON_SEARCH_URL
+        value: "https://www.amazon.co.za/s?k={query}"
