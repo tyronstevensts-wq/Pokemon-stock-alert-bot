@@ -380,4 +380,4 @@ def extract_search_candidates(
         "html.parser"
     )
 
-    candidates =
+    candidates = []
