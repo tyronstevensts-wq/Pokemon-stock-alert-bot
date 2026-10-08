@@ -846,4 +846,55 @@ async def run_scan(
 
                 for listing in candidates:
 
-                    score
+                                        score = match_score(
+                        product,
+                        listing["title"],
+                        listing["text"]
+                    )
+
+                    if score >= 0.75:
+
+                        listing["score"] = score
+
+                        matches.append(
+                            listing
+                        )
+
+                del candidates
+
+                matches.sort(
+                    key=lambda x: x["score"],
+                    reverse=True
+                )
+
+                best_in_stock = None
+                inspected_statuses = []
+
+                # ------------------------------------------------
+                # Inspect top 5 potential matches.
+                # ------------------------------------------------
+
+                for listing in matches[:5]:
+
+                    status, body, final_url = (
+                        await inspect_listing(
+                            page,
+                            listing,
+                            product
+                        )
+                    )
+
+                    listing["status"] = status
+                    listing["url"] = final_url
+
+                    inspected_statuses.append(
+                        status
+                    )
+
+                    if status == "IN":
+
+                        best_in_stock = listing
+
+                        break
+
+                    del body
