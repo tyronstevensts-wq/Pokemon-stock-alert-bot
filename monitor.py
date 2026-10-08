@@ -1,8 +1,4 @@
-import asyncio
-import json
-import os
-import re
-import time
+import asyncio, json, os, re, time
 from pathlib import Path
 from urllib.parse import quote_plus, urljoin
 
@@ -10,267 +6,183 @@ import requests
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
 
-
-# ============================================================
-# CONFIG
-# ============================================================
-
-WATCHLIST = json.loads(
-    Path("watchlist.json").read_text(encoding="utf-8")
-)
-
+WATCHLIST = json.loads(Path("watchlist.json").read_text(encoding="utf-8"))
 STATE_FILE = Path("state.json")
-
-INTERVAL = int(
-    os.getenv("CHECK_INTERVAL_SECONDS", "60")
-)
-
+INTERVAL = int(os.getenv("CHECK_INTERVAL_SECONDS", "60"))
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 if not TOKEN or not CHAT_ID:
-    raise SystemExit(
-        "Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID first."
-    )
-
+    raise SystemExit("Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID first.")
 
 RETAILERS = {
     "Takealot": {
-        "search": os.getenv(
-            "TAKEALOT_SEARCH_URL",
-            "https://www.takealot.com/all?q={query}"
-        ),
+        "search": os.getenv("TAKEALOT_SEARCH_URL", "https://www.takealot.com/all?q={query}"),
         "base": "https://www.takealot.com",
     },
-
     "Checkers": {
-        "search": os.getenv(
-            "CHECKERS_SEARCH_URL",
-            "https://www.checkers.co.za/search/all?q={query}"
-        ),
+        "search": os.getenv("CHECKERS_SEARCH_URL", "https://www.checkers.co.za/search/all?q={query}"),
         "base": "https://www.checkers.co.za",
     },
-
     "Amazon": {
-        "search": os.getenv(
-            "AMAZON_SEARCH_URL",
-            "https://www.amazon.co.za/s?k={query}"
-        ),
+        "search": os.getenv("AMAZON_SEARCH_URL", "https://www.amazon.co.za/s?k={query}"),
         "base": "https://www.amazon.co.za",
     },
 }
 
-
-# ============================================================
-# PRODUCT MATCHING
-# ============================================================
-
+STOP = {
+    "pokemon", "pokémon", "tcg", "the", "and", "for", "with",
+    "card", "cards", "game", "trading", "celebration"
+}
 VARIANTS = {
-    "mewtwo",
-    "umbreon",
-    "espeon",
-    "zapdos",
-    "lucario",
-    "sylveon",
-    "greninja",
-    "ditto",
+    "mewtwo", "umbreon", "espeon", "zapdos", "lucario",
+    "sylveon", "greninja", "ditto"
 }
 
+def norm(s):
+    s = s.lower().replace("pokémon", "pokemon")
+    s = re.sub(r"[^a-z0-9]+", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
 
-PRODUCT_TERMS = [
-    "elite trainer box",
-    "ultra premium collection",
-    "battle deck",
-    "poster collection",
-    "booster bundle",
-    "knock out collection",
-    "premium collection",
-    "tech sticker collection",
-    "mini tin",
-    "ex tin",
-    "ex box",
-    "2 pack blister",
-    "mega expansion pack",
-    "binder collection",
-    "figure collection",
-]
-
-
-def norm(text):
-    if not text:
-        return ""
-
-    text = text.lower()
-    text = text.replace("pokémon", "pokemon")
-    text = text.replace("&", " and ")
-    text = text.replace("-", " ")
-    text = text.replace("/", " ")
-
-    text = re.sub(r"[^a-z0-9\s]", " ", text)
-    text = re.sub(r"\s+", " ", text)
-
-    return text.strip()
+def tokens(s):
+    return set(norm(s).split())
 
 
 def match_score(target, candidate):
     """
-    VERY IMPORTANT:
+    Strict product matching.
 
-    A candidate MUST clearly belong to the
-    Pokémon TCG 30th Celebration range.
-
-    Generic Pokémon tins/products are rejected.
+    A listing must:
+    1. Be a 30th Celebration product.
+    2. Match the important product words.
+    3. Match character/variant names where applicable.
     """
 
-    target_n = norm(target)
-    candidate_n = norm(candidate)
+    def normalize(text):
+        text = text.lower()
+        text = text.replace("-", " ")
+        text = text.replace("/", " ")
+        text = text.replace("&", " and ")
+        text = re.sub(r"[^a-z0-9\s]", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
 
-    # --------------------------------------------------------
-    # HARD 30TH CELEBRATION REQUIREMENT
-    # --------------------------------------------------------
+    target_n = normalize(target)
+    candidate_n = normalize(candidate)
 
+    # ---------------------------------------------------------
+    # HARD REQUIREMENT:
+    # The listing MUST be from the 30th Celebration range.
+    # ---------------------------------------------------------
     if "30th" not in candidate_n:
         return 0
 
     if "celebration" not in candidate_n:
         return 0
 
-    # --------------------------------------------------------
-    # VARIANT PROTECTION
-    # --------------------------------------------------------
+    # ---------------------------------------------------------
+    # Important variant/product words.
+    # These MUST match when they appear in the watchlist item.
+    # ---------------------------------------------------------
+    required_variants = [
+        "mewtwo",
+        "umbreon",
+        "espeon",
+        "zapdos",
+        "lucario",
+        "sylveon",
+        "greninja",
+        "ditto",
+    ]
 
-    for variant in VARIANTS:
-        if variant in target_n:
-            if variant not in candidate_n:
-                return 0
+    for variant in required_variants:
+        if variant in target_n and variant not in candidate_n:
+            return 0
 
-    # --------------------------------------------------------
-    # PRODUCT TYPE PROTECTION
-    # --------------------------------------------------------
+    # ---------------------------------------------------------
+    # Important product terms.
+    # ---------------------------------------------------------
+    required_terms = [
+        "elite trainer box",
+        "ultra premium collection",
+        "battle deck",
+        "poster collection",
+        "booster bundle",
+        "knock out collection",
+        "premium collection",
+        "tech sticker collection",
+        "mini tin",
+        "ex tin",
+        "ex box",
+        "2 pack blister",
+        "mega expansion pack",
+    ]
 
-    for term in PRODUCT_TERMS:
-        if term in target_n:
-            if term not in candidate_n:
-                return 0
+    for term in required_terms:
+        if term in target_n and term not in candidate_n:
+            return 0
 
-    # --------------------------------------------------------
-    # PRODUCT-SPECIFIC WORD MATCHING
-    # --------------------------------------------------------
-
+    # ---------------------------------------------------------
+    # Token-based similarity for the remaining words.
+    # ---------------------------------------------------------
     stop_words = {
         "pokemon",
         "tcg",
         "the",
         "and",
-        "for",
-        "with",
         "card",
-        "cards",
         "game",
-        "trading",
-        "30th",
-        "celebration",
+        "cards",
     }
 
-    target_words = [
-        word
-        for word in target_n.split()
+    target_tokens = {
+        word for word in target_n.split()
         if word not in stop_words
-    ]
+    }
 
-    if not target_words:
+    candidate_tokens = set(candidate_n.split())
+
+    if not target_tokens:
         return 0
 
-    matched = 0
+    matched = sum(
+        1 for token in target_tokens
+        if token in candidate_tokens
+    )
 
-    for word in target_words:
-        if word in candidate_n.split():
-            matched += 1
+    score = matched / len(target_tokens)
 
-    score = matched / len(target_words)
-
-    # Strong match required
-    if score < 0.75:
+    # ---------------------------------------------------------
+    # Require a very strong match.
+    # ---------------------------------------------------------
+    if score < 0.90:
         return 0
 
     return score
-
-
-# ============================================================
-# STOCK DETECTION
-# ============================================================
-
 def stock_state(text):
     t = norm(text)
-
-    # Check negative FIRST.
     negative = [
-        "out of stock",
-        "currently unavailable",
-        "sold out",
-        "unavailable",
-        "not available",
-        "no stock",
+        "out of stock", "currently unavailable", "sold out",
+        "unavailable", "not available", "no stock"
     ]
-
-    for phrase in negative:
-        if phrase in t:
-            return "OUT"
-
     positive = [
-        "add to cart",
-        "add to basket",
-        "add to trolley",
-        "buy now",
-        "in stock",
-        "available",
+        "add to cart", "add to basket", "add to trolley",
+        "buy now", "in stock", "available"
     ]
-
-    for phrase in positive:
-        if phrase in t:
-            return "IN"
-
+    if any(x in t for x in negative):
+        return "OUT"
+    if any(x in t for x in positive):
+        return "IN"
     return "UNKNOWN"
 
-
-# ============================================================
-# STATE
-# ============================================================
-
 def load_state():
-    try:
-        if STATE_FILE.exists():
-            return json.loads(
-                STATE_FILE.read_text(
-                    encoding="utf-8"
-                )
-            )
-    except Exception as e:
-        print("State load error:", e)
-
-    return {}
-
+    return json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
 
 def save_state(state):
-    try:
-        STATE_FILE.write_text(
-            json.dumps(
-                state,
-                indent=2,
-                ensure_ascii=False
-            ),
-            encoding="utf-8"
-        )
-    except Exception as e:
-        print("State save error:", e)
-
-
-# ============================================================
-# TELEGRAM
-# ============================================================
+    STATE_FILE.write_text(json.dumps(state, indent=2, ensure_ascii=False))
 
 def telegram(message):
-    response = requests.post(
+    r = requests.post(
         f"https://api.telegram.org/bot{TOKEN}/sendMessage",
         json={
             "chat_id": CHAT_ID,
@@ -279,290 +191,180 @@ def telegram(message):
         },
         timeout=20,
     )
+    r.raise_for_status()
 
-    response.raise_for_status()
-
-
-# ============================================================
-# SEARCH RESULT EXTRACTION
-# ============================================================
-
-def extract_search_candidates(html, base_url):
+def extract_search_candidates(retailer, html, base_url):
     """
-    Extract product links from retailer search results.
-
-    We keep the amount of data small to prevent Render
-    memory usage from growing.
+    Extract likely product cards/links from search results.
+    We intentionally inspect links individually so unrelated text elsewhere
+    on the page cannot cause a false match.
     """
-
     soup = BeautifulSoup(html, "html.parser")
-
     candidates = []
-    seen_urls = set()
 
+    # Product-looking anchors are the most portable signal across all 3 sites.
     for a in soup.find_all("a", href=True):
-
         title = a.get_text(" ", strip=True)
-
+        href = urljoin(base_url, a["href"])
         if len(title) < 8:
             continue
 
-        href = urljoin(
-            base_url,
-            a.get("href", "")
-        )
-
-        if not href.startswith("http"):
+        # Avoid obvious navigation/account/cart links.
+        h = href.lower()
+        if any(x in h for x in ["/cart", "/account", "/help", "/customer", "javascript:"]):
             continue
 
-        href_lower = href.lower()
+        # Walk up a few levels to capture the listing/card text.
+        container = a
+        for _ in range(4):
+            if container.parent:
+                container = container.parent
 
-        # Ignore navigation
-        if any(
-            x in href_lower
-            for x in [
-                "/cart",
-                "/account",
-                "/help",
-                "/customer",
-                "javascript:",
-                "#",
-            ]
-        ):
+        card_text = container.get_text(" ", strip=True)
+        if len(card_text) > 2500:
+            card_text = card_text[:2500]
+
+        candidates.append({
+            "title": title,
+            "text": card_text,
+            "url": href,
+        })
+
+    # Deduplicate URLs.
+    seen = set()
+    unique = []
+    for c in candidates:
+        if c["url"] in seen:
             continue
-
-        if href in seen_urls:
-            continue
-
-        seen_urls.add(href)
-
-        # Get a SMALL amount of surrounding product-card text.
-        parent = a.parent
-
-        card_text = title
-
-        if parent:
-            parent_text = parent.get_text(
-                " ",
-                strip=True
-            )
-
-            if len(parent_text) <= 1000:
-                card_text = parent_text
-
-        candidates.append(
-            {
-                "title": title[:500],
-                "text": card_text[:1200],
-                "url": href,
-            }
-        )
-
-        # Prevent enormous search-result lists.
-        if len(candidates) >= 50:
-            break
-
-    return candidates
-
-
-# ============================================================
-# SEARCH RETAILER
-# ============================================================
+        seen.add(c["url"])
+        unique.append(c)
+    return unique
 
 async def search_retailer(page, retailer, query):
-
     template = RETAILERS[retailer]["search"]
-
-    url = template.format(
-        query=quote_plus(query)
-    )
-
+    url = template.format(query=quote_plus(query))
     try:
-
-        await page.goto(
-            url,
-            wait_until="domcontentloaded",
-            timeout=30000,
-        )
-
-        # Short wait for JS-rendered products.
-        await page.wait_for_timeout(1200)
-
+        await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+        await page.wait_for_timeout(2500)
         html = await page.content()
-
         return html, page.url, None
-
     except Exception as e:
-
         return "", url, str(e)
 
-
-# ============================================================
-# INSPECT PRODUCT
-# ============================================================
-
 async def inspect_listing(page, listing):
-
+    """
+    Open the matching listing itself when possible. This avoids declaring
+    'in stock' merely because the search-result page contains generic words.
+    """
     try:
-
-        await page.goto(
-            listing["url"],
-            wait_until="domcontentloaded",
-            timeout=30000,
-        )
-
-        await page.wait_for_timeout(800)
-
-        body = await page.locator(
-            "body"
-        ).inner_text(
-            timeout=8000
-        )
-
-        # Limit memory.
-        body = body[:15000]
-
-        return (
-            stock_state(body),
-            body,
-            page.url,
-        )
-
+        await page.goto(listing["url"], wait_until="domcontentloaded", timeout=45000)
+        await page.wait_for_timeout(1800)
+        body = await page.locator("body").inner_text(timeout=10000)
+        html = await page.content()
+        return stock_state(body), html, body, page.url
     except Exception:
-
-        # If product page cannot be opened,
-        # fall back to search-result text.
-        return (
-            stock_state(listing["text"]),
-            listing["text"],
-            listing["url"],
-        )
-
-
-# ============================================================
-# BROWSER
-# ============================================================
-
-async def create_browser(pw):
-
-    browser = await pw.chromium.launch(
-        headless=True,
-        args=[
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-            "--no-sandbox",
-        ],
-    )
-
-    context = await browser.new_context(
-        locale="en-ZA",
-        timezone_id="Africa/Johannesburg",
-        user_agent=(
-            "Mozilla/5.0 (Linux; Android 14) "
-            "AppleWebKit/537.36 "
-            "(KHTML, like Gecko) "
-            "Chrome/140.0 Mobile Safari/537.36"
-        ),
-    )
-
-    # Block heavy resources.
-    async def block_heavy(route):
-
-        resource_type = route.request.resource_type
-
-        if resource_type in {
-            "image",
-            "media",
-            "font",
-        }:
-            await route.abort()
-        else:
-            await route.continue_()
-
-    await context.route(
-        "**/*",
-        block_heavy
-    )
-
-    page = await context.new_page()
-
-    return browser, context, page
-
-
-# ============================================================
-# MAIN SCAN
-# ============================================================
+        return stock_state(listing["text"]), "", listing["text"], listing["url"]
 
 async def main():
-
-    print("")
-    print("==========================================")
-    print("🚀 POKÉMON STOCK ALERT BOT")
-    print("==========================================")
-    print(
-        f"Products: {len(WATCHLIST)}"
-    )
-    print(
-        f"Retailers: {len(RETAILERS)}"
-    )
-    print(
-        f"Scan interval: {INTERVAL} seconds"
-    )
-    print("30th Celebration filter: ON")
-    print("Memory optimisation: ON")
-    print("==========================================")
-    print("")
-
     state = load_state()
 
     async with async_playwright() as pw:
-
-        browser, context, page = await create_browser(
-            pw
+        browser = await pw.chromium.launch(headless=True)
+        context = await browser.new_context(
+            locale="en-ZA",
+            timezone_id="Africa/Johannesburg",
+            user_agent=(
+                "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/140.0 Mobile Safari/537.36"
+            ),
         )
+        search_page = await context.new_page()
+        detail_page = await context.new_page()
 
-        try:
-
-            while True:
-
-                scan_started = time.time()
-
-                print("")
-                print(
-                    "========== NEW SCAN =========="
-                )
-                print(
-                    time.strftime(
-                        "%Y-%m-%d %H:%M:%S %Z"
+        while True:
+            for product in WATCHLIST:
+                for retailer in RETAILERS:
+                    key = f"{retailer}|{product}"
+                    html, search_url, error = await search_retailer(
+                        search_page, retailer, product
                     )
-                )
 
-                for product in WATCHLIST:
+                    if error:
+                        print(retailer, product, "SEARCH ERROR", error)
+                        continue
 
-                    print("")
+                    listings = extract_search_candidates(
+                        retailer, html, RETAILERS[retailer]["base"]
+                    )
+
+                    matches = []
+                    for listing in listings:
+                        score = match_score(product, listing["title"] + " " + listing["text"])
+                        if score >= 0.75:
+                            matches.append((score, listing))
+
+                    matches.sort(key=lambda x: x[0], reverse=True)
+
+                    # Inspect the best few matching listings. This is important
+                    # because search pages can contain multiple variants/sellers.
+                    best_in_stock = None
+                    best_candidate = None
+
+                    for score, listing in matches[:5]:
+                        status, _, body, final_url = await inspect_listing(
+                            detail_page, listing
+                        )
+                        candidate = dict(listing)
+                        candidate["score"] = score
+                        candidate["status"] = status
+                        candidate["url"] = final_url
+                        candidate["body"] = body
+                        best_candidate = candidate
+
+                        if status == "IN":
+                            best_in_stock = candidate
+                            break
+
+                    current = "IN" if best_in_stock else (
+                        "OUT" if matches and all(
+                            m[1].get("status") == "OUT" for m in matches[:5]
+                        ) else "UNKNOWN"
+                    )
+
+                    old = state.get(key, "UNKNOWN")
+
+                    # Alert on first confirmed availability and on later
+                    # OUT/UNKNOWN -> IN transitions.
+                    if best_in_stock and old != "IN":
+                        msg = (
+                            "🚨🚨 POKÉMON STOCK ALERT 🚨🚨\n\n"
+                            f"🎴 {product}\n"
+                            f"🏪 {retailer}\n"
+                            "🟢 MATCHING LISTING AVAILABLE\n\n"
+                            f"📦 Listing: {best_in_stock['title']}\n"
+                            f"🔗 BUY NOW:\n{best_in_stock['url']}\n\n"
+                            f"🎯 Match score: {best_in_stock['score']:.0%}\n"
+                            "⚡ Detected: "
+                            f"{time.strftime('%Y-%m-%d %H:%M:%S %Z')}"
+                        )
+                        try:
+                            telegram(msg)
+                        except Exception as e:
+                            print("Telegram error:", e)
+
+                    if current != "UNKNOWN":
+                        state[key] = current
+                        save_state(state)
+
                     print(
-                        f"🎴 {product}"
+                        retailer, "|", product,
+                        "| matches:", len(matches),
+                        "| status:", current
                     )
 
-                    for retailer in RETAILERS:
+                    await asyncio.sleep(1)
 
-                        key = (
-                            f"{retailer}|{product}"
-                        )
+            await asyncio.sleep(INTERVAL)
 
-                        # ------------------------------------------------
-                        # SEARCH
-                        # ------------------------------------------------
-
-                        html, search_url, error = (
-                            await search_retailer(
-                                page,
-                                retailer,
-                                product,
-                            )
-                        )
-
-                        if error:
-
-                            print(
-                                f" 
+if __name__ == "__main__":
+    asyncio.run(main())
