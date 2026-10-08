@@ -61,6 +61,48 @@ RETAILERS = {
 }
 
 
+# ============================================================
+# 30TH CELEBRATION SAFETY FILTER
+# ============================================================
+
+CELEBRATION_REQUIRED = [
+    "30th celebration",
+    "30th-celebration",
+    "30th anniversary",
+    "30th-anniversary",
+]
+
+
+# ============================================================
+# PRODUCT TYPES
+# ============================================================
+
+PRODUCT_TERMS = [
+    "elite trainer box",
+    "ultra premium collection",
+    "ultra-premium collection",
+    "battle deck",
+    "poster collection",
+    "booster bundle",
+    "knock out collection",
+    "premium collection",
+    "tech sticker collection",
+    "mini tin",
+    "ex tin",
+    "ex box",
+    "2 pack blister",
+    "2-pack blister",
+    "mega expansion pack",
+    "expansion pack",
+    "binder collection",
+    "figure collection",
+]
+
+
+# ============================================================
+# VARIANTS
+# ============================================================
+
 VARIANTS = {
     "mewtwo",
     "umbreon",
@@ -73,98 +115,152 @@ VARIANTS = {
 }
 
 
-PRODUCT_TERMS = [
-    "elite trainer box",
-    "ultra premium collection",
-    "battle deck",
-    "poster collection",
-    "booster bundle",
-    "knock out collection",
-    "premium collection",
-    "tech sticker collection",
-    "mini tin",
-    "ex tin",
-    "ex box",
-    "2 pack blister",
-    "mega expansion pack",
-]
-
-
 # ============================================================
 # TEXT HELPERS
 # ============================================================
 
 def norm(text):
+    if not text:
+        return ""
+
     text = text.lower()
+
     text = text.replace("pokémon", "pokemon")
+    text = text.replace("–", "-")
+    text = text.replace("—", "-")
     text = text.replace("&", " and ")
-    text = re.sub(r"[^a-z0-9]+", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
+
+    text = re.sub(
+        r"[^a-z0-9]+",
+        " ",
+        text
+    )
+
+    return re.sub(
+        r"\s+",
+        " ",
+        text
+    ).strip()
 
 
 def tokens(text):
-    return set(norm(text).split())
+    return set(
+        norm(text).split()
+    )
 
 
 # ============================================================
-# STRICT PRODUCT MATCHING
+# HARD 30TH CELEBRATION CHECK
 # ============================================================
 
-def match_score(target, candidate_title, candidate_text=""):
+def is_30th_celebration(text):
     """
-    Very strict matching.
+    HARD SAFETY FILTER.
 
-    The candidate must:
-    - contain 30th
-    - contain celebration
-    - contain the correct product type
-    - contain required variant names
-    - achieve a high token match
+    A listing MUST contain a recognizable 30th Celebration
+    reference.
+
+    Generic Pokémon products are rejected.
     """
+
+    t = norm(text)
+
+    if "30th celebration" in t:
+        return True
+
+    if "30th anniversary" in t:
+        return True
+
+    # Some retailers separate the words.
+    if (
+        "30th" in t
+        and "celebration" in t
+    ):
+        return True
+
+    return False
+
+
+# ============================================================
+# PRODUCT TYPE CHECK
+# ============================================================
+
+def get_product_terms(target):
+    target_n = norm(target)
+
+    return [
+        term
+        for term in PRODUCT_TERMS
+        if norm(term) in target_n
+    ]
+
+
+# ============================================================
+# STRICT MATCHING
+# ============================================================
+
+def match_score(
+    target,
+    candidate_title,
+    candidate_text=""
+):
 
     target_n = norm(target)
     title_n = norm(candidate_title)
     text_n = norm(candidate_text)
 
     # --------------------------------------------------------
-    # HARD REQUIREMENT:
-    # The actual listing title must identify the 30th
-    # Celebration range.
+    # ABSOLUTE REQUIREMENT:
+    # PRODUCT MUST BE 30TH CELEBRATION
     # --------------------------------------------------------
 
-    if "30th" not in title_n:
-        return 0
-
-    if "celebration" not in title_n:
+    if not is_30th_celebration(
+        title_n
+    ):
         return 0
 
     # --------------------------------------------------------
-    # Variant protection
+    # PRODUCT TYPE
+    # --------------------------------------------------------
+
+    target_terms = get_product_terms(
+        target_n
+    )
+
+    if not target_terms:
+        return 0
+
+    product_type_found = False
+
+    for term in target_terms:
+
+        term_n = norm(term)
+
+        if term_n in title_n:
+            product_type_found = True
+            break
+
+    if not product_type_found:
+        return 0
+
+    # --------------------------------------------------------
+    # VARIANT PROTECTION
     # --------------------------------------------------------
 
     for variant in VARIANTS:
+
         if variant in target_n:
+
             if variant not in title_n:
-                return 0
+
+                # Allow variant to appear in nearby card
+                # text only if the product title is clearly
+                # 30th Celebration.
+                if variant not in text_n:
+                    return 0
 
     # --------------------------------------------------------
-    # Product type protection
-    # --------------------------------------------------------
-
-    matched_product_term = False
-
-    for term in PRODUCT_TERMS:
-        if term in target_n:
-            if term not in title_n:
-                return 0
-
-            matched_product_term = True
-
-    if not matched_product_term:
-        return 0
-
-    # --------------------------------------------------------
-    # Token comparison
+    # TARGET TOKEN MATCH
     # --------------------------------------------------------
 
     stop_words = {
@@ -176,15 +272,19 @@ def match_score(target, candidate_title, candidate_text=""):
         "cards",
         "game",
         "trading",
+        "collectible",
     }
 
     target_tokens = {
         word
         for word in target_n.split()
         if word not in stop_words
+        and len(word) > 2
     }
 
-    title_tokens = tokens(title_n)
+    title_tokens = tokens(
+        title_n + " " + text_n[:500]
+    )
 
     if not target_tokens:
         return 0
@@ -195,9 +295,17 @@ def match_score(target, candidate_title, candidate_text=""):
         if word in title_tokens
     )
 
-    score = matched / len(target_tokens)
+    score = (
+        matched /
+        len(target_tokens)
+    )
 
-    if score < 0.90:
+    # --------------------------------------------------------
+    # Slightly more forgiving than previous version,
+    # but still strict.
+    # --------------------------------------------------------
+
+    if score < 0.75:
         return 0
 
     return score
@@ -208,6 +316,7 @@ def match_score(target, candidate_title, candidate_text=""):
 # ============================================================
 
 def stock_state(text):
+
     t = norm(text)
 
     negative = [
@@ -217,6 +326,7 @@ def stock_state(text):
         "unavailable",
         "not available",
         "no stock",
+        "temporarily out of stock",
     ]
 
     positive = [
@@ -228,11 +338,17 @@ def stock_state(text):
         "available",
     ]
 
-    # Negative first
-    if any(term in t for term in negative):
+    # Negative wins.
+    if any(
+        term in t
+        for term in negative
+    ):
         return "OUT"
 
-    if any(term in t for term in positive):
+    if any(
+        term in t
+        for term in positive
+    ):
         return "IN"
 
     return "UNKNOWN"
@@ -243,19 +359,31 @@ def stock_state(text):
 # ============================================================
 
 def load_state():
+
     try:
+
         if STATE_FILE.exists():
+
             return json.loads(
-                STATE_FILE.read_text(encoding="utf-8")
+                STATE_FILE.read_text(
+                    encoding="utf-8"
+                )
             )
+
     except Exception as e:
-        print("STATE LOAD ERROR:", e)
+
+        print(
+            "STATE LOAD ERROR:",
+            e
+        )
 
     return {}
 
 
 def save_state(state):
+
     try:
+
         STATE_FILE.write_text(
             json.dumps(
                 state,
@@ -264,8 +392,13 @@ def save_state(state):
             ),
             encoding="utf-8"
         )
+
     except Exception as e:
-        print("STATE SAVE ERROR:", e)
+
+        print(
+            "STATE SAVE ERROR:",
+            e
+        )
 
 
 # ============================================================
@@ -273,6 +406,7 @@ def save_state(state):
 # ============================================================
 
 def telegram(message):
+
     response = requests.post(
         f"https://api.telegram.org/bot{TOKEN}/sendMessage",
         json={
@@ -295,29 +429,31 @@ def extract_search_candidates(
     html,
     base_url
 ):
-    """
-    Memory-efficient search result extraction.
 
-    Important:
-    We DO NOT keep thousands of large parent-card HTML/text
-    strings in memory.
-
-    We only keep a limited number of useful candidates.
-    """
-
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(
+        html,
+        "html.parser"
+    )
 
     candidates = []
     seen_urls = set()
 
-    MAX_CANDIDATES = 80
+    MAX_CANDIDATES = 120
 
-    for a in soup.find_all("a", href=True):
+    # --------------------------------------------------------
+    # Look through links AND useful heading elements.
+    # --------------------------------------------------------
+
+    elements = soup.find_all(
+        ["a", "h1", "h2", "h3", "h4"]
+    )
+
+    for element in elements:
 
         if len(candidates) >= MAX_CANDIDATES:
             break
 
-        title = a.get_text(
+        title = element.get_text(
             " ",
             strip=True
         )
@@ -325,14 +461,37 @@ def extract_search_candidates(
         if len(title) < 8:
             continue
 
+        href = None
+
+        if element.name == "a":
+
+            href = element.get(
+                "href"
+            )
+
+        else:
+
+            parent = element.find_parent(
+                "a",
+                href=True
+            )
+
+            if parent:
+
+                href = parent.get(
+                    "href"
+                )
+
+        if not href:
+            continue
+
         href = urljoin(
             base_url,
-            a["href"]
+            href
         )
 
         lower_href = href.lower()
 
-        # Ignore navigation
         if any(
             x in lower_href
             for x in [
@@ -351,11 +510,12 @@ def extract_search_candidates(
 
         seen_urls.add(href)
 
-        # Only take a small amount of surrounding text.
-        container = a
+        container = element
 
-        for _ in range(2):
+        for _ in range(3):
+
             if container.parent:
+
                 container = container.parent
 
         card_text = container.get_text(
@@ -363,12 +523,21 @@ def extract_search_candidates(
             strip=True
         )
 
-        # Prevent giant strings from consuming memory.
-        card_text = card_text[:700]
+        card_text = card_text[:1200]
+
+        # ----------------------------------------------------
+        # Early 30th Celebration filter.
+        # This prevents generic tins from entering matches.
+        # ----------------------------------------------------
+
+        if not is_30th_celebration(
+            title + " " + card_text
+        ):
+            continue
 
         candidates.append(
             {
-                "title": title[:300],
+                "title": title[:400],
                 "text": card_text,
                 "url": href,
             }
@@ -378,30 +547,32 @@ def extract_search_candidates(
 
 
 # ============================================================
-# PLAYWRIGHT MEMORY OPTIMISATION
+# PLAYWRIGHT RESOURCE CONTROL
 # ============================================================
 
 async def block_heavy_resources(route):
-    """
-    Prevent Chromium from downloading unnecessary resources.
 
-    Product text is still loaded, but images/video/fonts are
-    blocked to dramatically reduce RAM usage.
-    """
-
-    resource_type = route.request.resource_type
+    resource_type = (
+        route.request.resource_type
+    )
 
     if resource_type in {
         "image",
         "media",
         "font",
     }:
+
         await route.abort()
+
     else:
+
         await route.continue_()
 
 
-async def create_browser_context(browser):
+async def create_browser_context(
+    browser
+):
+
     context = await browser.new_context(
         locale="en-ZA",
         timezone_id="Africa/Johannesburg",
@@ -433,7 +604,9 @@ async def search_retailer(
     query
 ):
 
-    template = RETAILERS[retailer]["search"]
+    template = RETAILERS[
+        retailer
+    ]["search"]
 
     url = template.format(
         query=quote_plus(query)
@@ -447,15 +620,25 @@ async def search_retailer(
             timeout=45000
         )
 
-        await page.wait_for_timeout(1800)
+        await page.wait_for_timeout(
+            2500
+        )
 
         html = await page.content()
 
-        return html, page.url, None
+        return (
+            html,
+            page.url,
+            None
+        )
 
     except Exception as e:
 
-        return "", url, str(e)
+        return (
+            "",
+            url,
+            str(e)
+        )
 
 
 # ============================================================
@@ -464,7 +647,8 @@ async def search_retailer(
 
 async def inspect_listing(
     page,
-    listing
+    listing,
+    target_product
 ):
 
     try:
@@ -475,7 +659,9 @@ async def inspect_listing(
             timeout=45000
         )
 
-        await page.wait_for_timeout(1200)
+        await page.wait_for_timeout(
+            1500
+        )
 
         body = await page.locator(
             "body"
@@ -483,7 +669,41 @@ async def inspect_listing(
             timeout=10000
         )
 
-        body = body[:12000]
+        body = body[:18000]
+
+        # ----------------------------------------------------
+        # IMPORTANT:
+        # Verify the product page itself is still 30th
+        # Celebration.
+        # ----------------------------------------------------
+
+        if not is_30th_celebration(
+            body[:8000]
+        ):
+
+            return (
+                "UNKNOWN",
+                body,
+                page.url
+            )
+
+        # ----------------------------------------------------
+        # Verify product match on actual page.
+        # ----------------------------------------------------
+
+        page_score = match_score(
+            target_product,
+            body[:2000],
+            body[:8000]
+        )
+
+        if page_score <= 0:
+
+            return (
+                "UNKNOWN",
+                body,
+                page.url
+            )
 
         return (
             stock_state(body),
@@ -494,10 +714,11 @@ async def inspect_listing(
     except Exception:
 
         return (
-            stock_state(
-                listing.get("text", "")
+            "UNKNOWN",
+            listing.get(
+                "text",
+                ""
             ),
-            listing.get("text", ""),
             listing["url"]
         )
 
@@ -513,19 +734,21 @@ def send_stock_alert(
 ):
 
     message = (
-        "🚨🚨 POKÉMON STOCK ALERT 🚨🚨\n\n"
+        "🚨🚨 POKÉMON 30TH CELEBRATION STOCK ALERT 🚨🚨\n\n"
         f"🎴 {product}\n"
-        f"🏪 {retailer}\n"
-        "🟢 MATCHING LISTING AVAILABLE\n\n"
-        f"📦 Listing: {listing['title']}\n"
+        f"🏪 {retailer}\n\n"
+        "🟢 MATCHING 30TH CELEBRATION LISTING AVAILABLE\n\n"
+        f"📦 {listing['title']}\n\n"
         f"🔗 BUY NOW:\n{listing['url']}\n\n"
         f"🎯 Match score: {listing['score']:.0%}\n"
-        "⚡ Detected: "
+        f"⚡ Detected: "
         f"{time.strftime('%Y-%m-%d %H:%M:%S %Z')}"
     )
 
     try:
+
         telegram(message)
+
         print(
             "📱 TELEGRAM ALERT SENT:",
             retailer,
@@ -545,16 +768,21 @@ def send_stock_alert(
 # ONE COMPLETE SCAN
 # ============================================================
 
-async def run_scan(browser, state):
+async def run_scan(
+    browser,
+    state
+):
 
     print()
     print("=" * 60)
+
     print(
         "🟢 SCAN STARTED",
         time.strftime(
             "%Y-%m-%d %H:%M:%S"
         )
     )
+
     print("=" * 60)
 
     context = None
@@ -612,254 +840,10 @@ async def run_scan(browser, state):
                     )
                 )
 
-                # Release the large HTML string immediately.
                 del html
 
                 matches = []
 
                 for listing in candidates:
 
-                    score = match_score(
-                        product,
-                        listing["title"],
-                        listing["text"]
-                    )
-
-                    if score >= 0.90:
-
-                        matches.append(
-                            (
-                                score,
-                                listing
-                            )
-                        )
-
-                # Release candidates once matches are made.
-                del candidates
-
-                matches.sort(
-                    key=lambda x: x[0],
-                    reverse=True
-                )
-
-                best_in_stock = None
-
-                # Only inspect top 3.
-                for score, listing in matches[:3]:
-
-                    status, body, final_url = (
-                        await inspect_listing(
-                            page,
-                            listing
-                        )
-                    )
-
-                    listing["score"] = score
-                    listing["status"] = status
-                    listing["url"] = final_url
-
-                    if status == "IN":
-
-                        best_in_stock = listing
-
-                        break
-
-                    # Release body immediately.
-                    del body
-
-                # ------------------------------------------------
-                # Determine current state correctly.
-                # ------------------------------------------------
-
-                if best_in_stock:
-
-                    current = "IN"
-
-                elif matches:
-
-                    inspected_statuses = [
-                        listing.get(
-                            "status",
-                            "UNKNOWN"
-                        )
-                        for _, listing
-                        in matches[:3]
-                    ]
-
-                    if all(
-                        status == "OUT"
-                        for status
-                        in inspected_statuses
-                    ):
-                        current = "OUT"
-
-                    else:
-                        current = "UNKNOWN"
-
-                else:
-
-                    current = "UNKNOWN"
-
-                old = state.get(
-                    key,
-                    "UNKNOWN"
-                )
-
-                print(
-                    retailer,
-                    "|",
-                    product,
-                    "| matches:",
-                    len(matches),
-                    "| status:",
-                    current
-                )
-
-                # ------------------------------------------------
-                # Alert only on transition to IN.
-                # ------------------------------------------------
-
-                if (
-                    best_in_stock
-                    and old != "IN"
-                ):
-
-                    send_stock_alert(
-                        product,
-                        retailer,
-                        best_in_stock
-                    )
-
-                # Only save known states.
-                if current != "UNKNOWN":
-
-                    state[key] = current
-
-                    save_state(state)
-
-                await asyncio.sleep(0.5)
-
-        print()
-        print("=" * 60)
-        print(
-            "✅ SCAN COMPLETE",
-            time.strftime(
-                "%Y-%m-%d %H:%M:%S"
-            )
-        )
-        print(
-            "⏱ Next scan in",
-            INTERVAL,
-            "seconds"
-        )
-        print(
-            "🧹 Closing browser context"
-        )
-        print("=" * 60)
-
-    except Exception as e:
-
-        print(
-            "🔴 SCAN ERROR:",
-            repr(e)
-        )
-
-    finally:
-
-        # --------------------------------------------------------
-        # VERY IMPORTANT:
-        # Close the entire context after EVERY scan.
-        # This releases Chromium pages/resources.
-        # --------------------------------------------------------
-
-        try:
-
-            if page:
-                await page.close()
-
-        except Exception:
-            pass
-
-        try:
-
-            if context:
-                await context.close()
-
-        except Exception:
-            pass
-
-
-# ============================================================
-# MAIN
-# ============================================================
-
-async def main():
-
-    print("=" * 60)
-    print("🟢 POKÉMON SA STOCK MONITOR STARTING")
-    print(
-        "Products:",
-        len(WATCHLIST)
-    )
-    print(
-        "Retailers:",
-        ", ".join(RETAILERS.keys())
-    )
-    print(
-        "Interval:",
-        INTERVAL,
-        "seconds"
-    )
-    print("=" * 60)
-
-    state = load_state()
-
-    async with async_playwright() as pw:
-
-        # Browser stays alive, but the context is recycled
-        # after every complete scan.
-        browser = await pw.chromium.launch(
-            headless=True,
-            args=[
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--no-sandbox",
-                "--disable-background-networking",
-                "--disable-background-timer-throttling",
-            ],
-        )
-
-        try:
-
-            while True:
-
-                await run_scan(
-                    browser,
-                    state
-                )
-
-                print(
-                    "💤 Sleeping for",
-                    INTERVAL,
-                    "seconds..."
-                )
-
-                await asyncio.sleep(
-                    INTERVAL
-                )
-
-        finally:
-
-            print(
-                "🛑 Closing Chromium"
-            )
-
-            await browser.close()
-
-
-# ============================================================
-# START
-# ============================================================
-
-if __name__ == "__main__":
-    asyncio.run(main())
+                    score
