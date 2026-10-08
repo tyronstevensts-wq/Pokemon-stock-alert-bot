@@ -20,17 +20,14 @@ WATCHLIST = json.loads(
 )
 
 STATE_FILE = Path("state.json")
-
-INTERVAL = int(
-    os.getenv("CHECK_INTERVAL_SECONDS", "60")
-)
+INTERVAL = int(os.getenv("CHECK_INTERVAL_SECONDS", "60"))
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 if not TOKEN or not CHAT_ID:
     raise SystemExit(
-        "Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID first."
+        "Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID environment variable."
     )
 
 
@@ -38,23 +35,21 @@ RETAILERS = {
     "Takealot": {
         "search": os.getenv(
             "TAKEALOT_SEARCH_URL",
-            "https://www.takealot.com/all?q={query}"
+            "https://www.takealot.com/all?q={query}",
         ),
         "base": "https://www.takealot.com",
     },
-
     "Checkers": {
         "search": os.getenv(
             "CHECKERS_SEARCH_URL",
-            "https://www.checkers.co.za/search/all?q={query}"
+            "https://www.checkers.co.za/search/all?q={query}",
         ),
         "base": "https://www.checkers.co.za",
     },
-
     "Amazon": {
         "search": os.getenv(
             "AMAZON_SEARCH_URL",
-            "https://www.amazon.co.za/s?k={query}"
+            "https://www.amazon.co.za/s?k={query}",
         ),
         "base": "https://www.amazon.co.za",
     },
@@ -62,46 +57,110 @@ RETAILERS = {
 
 
 # ============================================================
-# 30TH CELEBRATION SAFETY FILTER
+# TEXT HELPERS
 # ============================================================
 
-CELEBRATION_REQUIRED = [
-    "30th celebration",
-    "30th-celebration",
-    "30th anniversary",
-    "30th-anniversary",
-]
+def norm(text):
+    if not text:
+        return ""
 
+    text = text.lower()
+    text = text.replace("pokémon", "pokemon")
+    text = text.replace("–", "-")
+    text = text.replace("—", "-")
+    text = text.replace("&", " and ")
 
-# ============================================================
-# PRODUCT TYPES
-# ============================================================
+    text = re.sub(r"[^a-z0-9]+", " ", text)
 
-PRODUCT_TERMS = [
-    "elite trainer box",
-    "ultra premium collection",
-    "ultra-premium collection",
-    "battle deck",
-    "poster collection",
-    "booster bundle",
-    "knock out collection",
-    "premium collection",
-    "tech sticker collection",
-    "mini tin",
-    "ex tin",
-    "ex box",
-    "2 pack blister",
-    "2-pack blister",
-    "mega expansion pack",
-    "expansion pack",
-    "binder collection",
-    "figure collection",
-]
+    return re.sub(
+        r"\s+",
+        " ",
+        text,
+    ).strip()
 
 
 # ============================================================
-# VARIANTS
+# HARD 30TH CELEBRATION SAFETY FILTER
 # ============================================================
+
+def is_30th_celebration(text):
+    """
+    HARD SAFETY FILTER.
+
+    A listing MUST contain both:
+        30th
+        celebration
+
+    Generic Pokémon products are rejected.
+    """
+
+    t = norm(text)
+
+    return (
+        "30th" in t
+        and "celebration" in t
+    )
+
+
+# ============================================================
+# PRODUCT MATCHING
+# ============================================================
+
+PRODUCT_ALIASES = {
+    "elite trainer box": [
+        "elite trainer box",
+        "etb",
+    ],
+    "ultra premium collection": [
+        "ultra premium collection",
+        "ultra-premium collection",
+        "upc",
+    ],
+    "battle deck": [
+        "battle deck",
+    ],
+    "poster collection": [
+        "poster collection",
+    ],
+    "booster bundle": [
+        "booster bundle",
+    ],
+    "knock out collection": [
+        "knock out collection",
+        "knockout collection",
+    ],
+    "premium collection": [
+        "premium collection",
+    ],
+    "tech sticker collection": [
+        "tech sticker collection",
+    ],
+    "mini tin": [
+        "mini tin",
+    ],
+    "ex tin": [
+        "ex tin",
+    ],
+    "ex box": [
+        "ex box",
+    ],
+    "2 pack blister": [
+        "2 pack blister",
+        "2-pack blister",
+        "2 pack",
+    ],
+    "mega expansion pack": [
+        "mega expansion pack",
+        "expansion pack",
+    ],
+    "binder collection": [
+        "binder collection",
+    ],
+    "figure collection": [
+        "figure collection",
+    ],
+}
+
 
 VARIANTS = {
     "mewtwo",
@@ -115,152 +174,86 @@ VARIANTS = {
 }
 
 
-# ============================================================
-# TEXT HELPERS
-# ============================================================
+def product_type_matches(target, candidate):
+    target_n = norm(target)
+    candidate_n = norm(candidate)
 
-def norm(text):
-    if not text:
-        return ""
+    for product_type, aliases in PRODUCT_ALIASES.items():
 
-    text = text.lower()
+        if product_type in target_n:
 
-    text = text.replace("pokémon", "pokemon")
-    text = text.replace("–", "-")
-    text = text.replace("—", "-")
-    text = text.replace("&", " and ")
-
-    text = re.sub(
-        r"[^a-z0-9]+",
-        " ",
-        text
-    )
-
-    return re.sub(
-        r"\s+",
-        " ",
-        text
-    ).strip()
-
-
-def tokens(text):
-    return set(
-        norm(text).split()
-    )
-
-
-# ============================================================
-# HARD 30TH CELEBRATION CHECK
-# ============================================================
-
-def is_30th_celebration(text):
-    """
-    HARD SAFETY FILTER.
-
-    A listing MUST contain a recognizable 30th Celebration
-    reference.
-
-    Generic Pokémon products are rejected.
-    """
-
-    t = norm(text)
-
-    if "30th celebration" in t:
-        return True
-
-    if "30th anniversary" in t:
-        return True
-
-    # Some retailers separate the words.
-    if (
-        "30th" in t
-        and "celebration" in t
-    ):
-        return True
+            return any(
+                norm(alias) in candidate_n
+                for alias in aliases
+            )
 
     return False
 
 
-# ============================================================
-# PRODUCT TYPE CHECK
-# ============================================================
-
-def get_product_terms(target):
+def variant_matches(target, candidate):
     target_n = norm(target)
-
-    return [
-        term
-        for term in PRODUCT_TERMS
-        if norm(term) in target_n
-    ]
-
-
-# ============================================================
-# STRICT MATCHING
-# ============================================================
-
-def match_score(
-    target,
-    candidate_title,
-    candidate_text=""
-):
-
-    target_n = norm(target)
-    title_n = norm(candidate_title)
-    text_n = norm(candidate_text)
-
-    # --------------------------------------------------------
-    # ABSOLUTE REQUIREMENT:
-    # PRODUCT MUST BE 30TH CELEBRATION
-    # --------------------------------------------------------
-
-    if not is_30th_celebration(
-        title_n
-    ):
-        return 0
-
-    # --------------------------------------------------------
-    # PRODUCT TYPE
-    # --------------------------------------------------------
-
-    target_terms = get_product_terms(
-        target_n
-    )
-
-    if not target_terms:
-        return 0
-
-    product_type_found = False
-
-    for term in target_terms:
-
-        term_n = norm(term)
-
-        if term_n in title_n:
-            product_type_found = True
-            break
-
-    if not product_type_found:
-        return 0
-
-    # --------------------------------------------------------
-    # VARIANT PROTECTION
-    # --------------------------------------------------------
+    candidate_n = norm(candidate)
 
     for variant in VARIANTS:
 
         if variant in target_n:
 
-            if variant not in title_n:
+            if variant not in candidate_n:
+                return False
 
-                # Allow variant to appear in nearby card
-                # text only if the product title is clearly
-                # 30th Celebration.
-                if variant not in text_n:
-                    return 0
+    return True
+
+
+def match_score(
+    target,
+    candidate_title,
+    candidate_text="",
+):
+    """
+    Returns 0 when the listing is not a safe 30th
+    Celebration match.
+
+    Otherwise returns a score between 0 and 1.
+    """
+
+    combined = (
+        f"{candidate_title} "
+        f"{candidate_text[:1500]}"
+    )
+
+    combined_n = norm(combined)
+    title_n = norm(candidate_title)
+    target_n = norm(target)
 
     # --------------------------------------------------------
-    # TARGET TOKEN MATCH
+    # ABSOLUTE SAFETY RULE
+    # --------------------------------------------------------
+
+    if not is_30th_celebration(combined):
+        return 0.0
+
+    # --------------------------------------------------------
+    # PRODUCT TYPE
+    # --------------------------------------------------------
+
+    if not product_type_matches(
+        target,
+        combined,
+    ):
+        return 0.0
+
+    # --------------------------------------------------------
+    # VARIANT
+    # --------------------------------------------------------
+
+    if not variant_matches(
+        target,
+        combined,
+    ):
+        return 0.0
+
+    # --------------------------------------------------------
+    # TOKEN MATCH
     # --------------------------------------------------------
 
     stop_words = {
@@ -272,7 +265,8 @@ def match_score(
         "cards",
         "game",
         "trading",
-        "collectible",
+        "celebration",
+        "30th",
     }
 
     target_tokens = {
@@ -282,17 +276,17 @@ def match_score(
         and len(word) > 2
     }
 
-    title_tokens = tokens(
-        title_n + " " + text_n[:500]
+    candidate_tokens = set(
+        combined_n.split()
     )
 
     if not target_tokens:
-        return 0
+        return 0.0
 
     matched = sum(
         1
         for word in target_tokens
-        if word in title_tokens
+        if word in candidate_tokens
     )
 
     score = (
@@ -300,13 +294,27 @@ def match_score(
         len(target_tokens)
     )
 
-    # --------------------------------------------------------
-    # Slightly more forgiving than previous version,
-    # but still strict.
-    # --------------------------------------------------------
+    # Give the actual title extra importance.
+    title_tokens = set(
+        title_n.split()
+    )
+
+    title_matched = sum(
+        1
+        for word in target_tokens
+        if word in title_tokens
+    )
+
+    if title_matched:
+
+        score = max(
+            score,
+            title_matched /
+            len(target_tokens),
+        )
 
     if score < 0.75:
-        return 0
+        return 0.0
 
     return score
 
@@ -335,7 +343,6 @@ def stock_state(text):
         "add to trolley",
         "buy now",
         "in stock",
-        "available",
     ]
 
     # Negative wins.
@@ -370,11 +377,11 @@ def load_state():
                 )
             )
 
-    except Exception as e:
+    except Exception as exc:
 
         print(
             "STATE LOAD ERROR:",
-            e
+            repr(exc),
         )
 
     return {}
@@ -388,16 +395,16 @@ def save_state(state):
             json.dumps(
                 state,
                 indent=2,
-                ensure_ascii=False
+                ensure_ascii=False,
             ),
-            encoding="utf-8"
+            encoding="utf-8",
         )
 
-    except Exception as e:
+    except Exception as exc:
 
         print(
             "STATE SAVE ERROR:",
-            e
+            repr(exc),
         )
 
 
@@ -420,88 +427,93 @@ def telegram(message):
     response.raise_for_status()
 
 
+def send_stock_alert(
+    product,
+    retailer,
+    listing,
+):
+
+    message = (
+        "🚨 POKÉMON 30TH CELEBRATION STOCK ALERT 🚨\n\n"
+        f"🎴 Product: {product}\n"
+        f"🏪 Retailer: {retailer}\n"
+        f"📦 Listing: {listing['title']}\n\n"
+        "🟢 STATUS: IN STOCK\n\n"
+        f"🔗 BUY NOW:\n{listing['url']}\n\n"
+        f"🎯 Match score: {listing['score']:.0%}\n"
+        f"⏰ Detected: "
+        f"{time.strftime('%Y-%m-%d %H:%M:%S %Z')}"
+    )
+
+    try:
+
+        telegram(message)
+
+        print(
+            "📱 TELEGRAM ALERT SENT:",
+            retailer,
+            "|",
+            product,
+        )
+
+    except Exception as exc:
+
+        print(
+            "TELEGRAM ERROR:",
+            repr(exc),
+        )
+
+
 # ============================================================
 # SEARCH RESULT EXTRACTION
 # ============================================================
 
 def extract_search_candidates(
-    retailer,
     html,
-    base_url
+    base_url,
 ):
 
     soup = BeautifulSoup(
         html,
-        "html.parser"
+        "html.parser",
     )
 
     candidates = []
     seen_urls = set()
 
-    MAX_CANDIDATES = 120
+    for anchor in soup.find_all(
+        "a",
+        href=True,
+    ):
 
-    # --------------------------------------------------------
-    # Look through links AND useful heading elements.
-    # --------------------------------------------------------
-
-    elements = soup.find_all(
-        ["a", "h1", "h2", "h3", "h4"]
-    )
-
-    for element in elements:
-
-        if len(candidates) >= MAX_CANDIDATES:
+        if len(candidates) >= 150:
             break
 
-        title = element.get_text(
+        title = anchor.get_text(
             " ",
-            strip=True
+            strip=True,
         )
 
         if len(title) < 8:
             continue
 
-        href = None
-
-        if element.name == "a":
-
-            href = element.get(
-                "href"
-            )
-
-        else:
-
-            parent = element.find_parent(
-                "a",
-                href=True
-            )
-
-            if parent:
-
-                href = parent.get(
-                    "href"
-                )
-
-        if not href:
-            continue
-
         href = urljoin(
             base_url,
-            href
+            anchor["href"],
         )
 
         lower_href = href.lower()
 
         if any(
-            x in lower_href
-            for x in [
+            blocked in lower_href
+            for blocked in (
                 "/cart",
                 "/account",
                 "/help",
                 "/customer",
                 "javascript:",
                 "#",
-            ]
+            )
         ):
             continue
 
@@ -510,34 +522,31 @@ def extract_search_candidates(
 
         seen_urls.add(href)
 
-        container = element
+        container = anchor
 
         for _ in range(3):
 
-            if container.parent:
+            if container.parent is not None:
 
                 container = container.parent
 
         card_text = container.get_text(
             " ",
-            strip=True
-        )
-
-        card_text = card_text[:1200]
+            strip=True,
+        )[:1500]
 
         # ----------------------------------------------------
-        # Early 30th Celebration filter.
-        # This prevents generic tins from entering matches.
+        # HARD 30TH FILTER
         # ----------------------------------------------------
 
         if not is_30th_celebration(
-            title + " " + card_text
+            f"{title} {card_text}"
         ):
             continue
 
         candidates.append(
             {
-                "title": title[:400],
+                "title": title[:500],
                 "text": card_text,
                 "url": href,
             }
@@ -547,16 +556,14 @@ def extract_search_candidates(
 
 
 # ============================================================
-# PLAYWRIGHT RESOURCE CONTROL
+# PLAYWRIGHT
 # ============================================================
 
-async def block_heavy_resources(route):
+async def block_heavy_resources(
+    route,
+):
 
-    resource_type = (
-        route.request.resource_type
-    )
-
-    if resource_type in {
+    if route.request.resource_type in {
         "image",
         "media",
         "font",
@@ -570,7 +577,7 @@ async def block_heavy_resources(route):
 
 
 async def create_browser_context(
-    browser
+    browser,
 ):
 
     context = await browser.new_context(
@@ -588,7 +595,7 @@ async def create_browser_context(
 
     await context.route(
         "**/*",
-        block_heavy_resources
+        block_heavy_resources,
     )
 
     return context
@@ -601,7 +608,7 @@ async def create_browser_context(
 async def search_retailer(
     page,
     retailer,
-    query
+    query,
 ):
 
     template = RETAILERS[
@@ -609,7 +616,7 @@ async def search_retailer(
     ]["search"]
 
     url = template.format(
-        query=quote_plus(query)
+        query=quote_plus(query),
     )
 
     try:
@@ -617,7 +624,7 @@ async def search_retailer(
         await page.goto(
             url,
             wait_until="domcontentloaded",
-            timeout=45000
+            timeout=45000,
         )
 
         await page.wait_for_timeout(
@@ -629,15 +636,15 @@ async def search_retailer(
         return (
             html,
             page.url,
-            None
+            None,
         )
 
-    except Exception as e:
+    except Exception as exc:
 
         return (
             "",
             url,
-            str(e)
+            str(exc),
         )
 
 
@@ -648,7 +655,7 @@ async def search_retailer(
 async def inspect_listing(
     page,
     listing,
-    target_product
+    target_product,
 ):
 
     try:
@@ -656,11 +663,11 @@ async def inspect_listing(
         await page.goto(
             listing["url"],
             wait_until="domcontentloaded",
-            timeout=45000
+            timeout=45000,
         )
 
         await page.wait_for_timeout(
-            1500
+            1800
         )
 
         body = await page.locator(
@@ -669,32 +676,30 @@ async def inspect_listing(
             timeout=10000
         )
 
-        body = body[:18000]
+        body = body[:20000]
 
         # ----------------------------------------------------
-        # IMPORTANT:
-        # Verify the product page itself is still 30th
-        # Celebration.
+        # PRODUCT PAGE MUST ALSO BE 30TH CELEBRATION
         # ----------------------------------------------------
 
         if not is_30th_celebration(
-            body[:8000]
+            body
         ):
 
             return (
                 "UNKNOWN",
                 body,
-                page.url
+                page.url,
             )
 
         # ----------------------------------------------------
-        # Verify product match on actual page.
+        # PRODUCT PAGE MUST MATCH WATCHLIST PRODUCT
         # ----------------------------------------------------
 
         page_score = match_score(
             target_product,
-            body[:2000],
-            body[:8000]
+            body[:3000],
+            body[:12000],
         )
 
         if page_score <= 0:
@@ -702,65 +707,34 @@ async def inspect_listing(
             return (
                 "UNKNOWN",
                 body,
-                page.url
+                page.url,
             )
 
         return (
             stock_state(body),
             body,
-            page.url
+            page.url,
         )
 
-    except Exception:
+    except Exception as exc:
+
+        print(
+            "PRODUCT PAGE ERROR:",
+            repr(exc),
+            "|",
+            listing.get("url"),
+        )
 
         return (
             "UNKNOWN",
             listing.get(
                 "text",
-                ""
+                "",
             ),
-            listing["url"]
-        )
-
-
-# ============================================================
-# TELEGRAM ALERT
-# ============================================================
-
-def send_stock_alert(
-    product,
-    retailer,
-    listing
-):
-
-    message = (
-        "🚨🚨 POKÉMON 30TH CELEBRATION STOCK ALERT 🚨🚨\n\n"
-        f"🎴 {product}\n"
-        f"🏪 {retailer}\n\n"
-        "🟢 MATCHING 30TH CELEBRATION LISTING AVAILABLE\n\n"
-        f"📦 {listing['title']}\n\n"
-        f"🔗 BUY NOW:\n{listing['url']}\n\n"
-        f"🎯 Match score: {listing['score']:.0%}\n"
-        f"⚡ Detected: "
-        f"{time.strftime('%Y-%m-%d %H:%M:%S %Z')}"
-    )
-
-    try:
-
-        telegram(message)
-
-        print(
-            "📱 TELEGRAM ALERT SENT:",
-            retailer,
-            "|",
-            product
-        )
-
-    except Exception as e:
-
-        print(
-            "TELEGRAM ERROR:",
-            e
+            listing.get(
+                "url",
+                "",
+            ),
         )
 
 
@@ -770,20 +744,25 @@ def send_stock_alert(
 
 async def run_scan(
     browser,
-    state
+    state,
 ):
 
     print()
-    print("=" * 60)
+    print("=" * 70)
 
     print(
         "🟢 SCAN STARTED",
         time.strftime(
             "%Y-%m-%d %H:%M:%S"
-        )
+        ),
     )
 
-    print("=" * 60)
+    print(
+        "🎯 HARD FILTER: "
+        "30TH CELEBRATION ONLY"
+    )
+
+    print("=" * 70)
 
     context = None
     page = None
@@ -804,19 +783,21 @@ async def run_scan(
                     "🔎",
                     retailer,
                     "|",
-                    product
+                    product,
                 )
 
                 key = (
                     f"{retailer}|{product}"
                 )
 
-                html, search_url, error = (
-                    await search_retailer(
-                        page,
-                        retailer,
-                        product
-                    )
+                (
+                    html,
+                    search_url,
+                    error,
+                ) = await search_retailer(
+                    page,
+                    retailer,
+                    product,
                 )
 
                 if error:
@@ -825,18 +806,17 @@ async def run_scan(
                         "⚠️ SEARCH ERROR:",
                         retailer,
                         product,
-                        error
+                        error,
                     )
 
                     continue
 
                 candidates = (
                     extract_search_candidates(
-                        retailer,
                         html,
                         RETAILERS[
                             retailer
-                        ]["base"]
+                        ]["base"],
                     )
                 )
 
@@ -846,10 +826,10 @@ async def run_scan(
 
                 for listing in candidates:
 
-                                        score = match_score(
+                    score = match_score(
                         product,
                         listing["title"],
-                        listing["text"]
+                        listing["text"],
                     )
 
                     if score >= 0.75:
@@ -863,25 +843,24 @@ async def run_scan(
                 del candidates
 
                 matches.sort(
-                    key=lambda x: x["score"],
-                    reverse=True
+                    key=lambda item:
+                    item["score"],
+                    reverse=True,
                 )
 
                 best_in_stock = None
                 inspected_statuses = []
 
-                # ------------------------------------------------
-                # Inspect top 5 potential matches.
-                # ------------------------------------------------
-
                 for listing in matches[:5]:
 
-                    status, body, final_url = (
-                        await inspect_listing(
-                            page,
-                            listing,
-                            product
-                        )
+                    (
+                        status,
+                        body,
+                        final_url,
+                    ) = await inspect_listing(
+                        page,
+                        listing,
+                        product,
                     )
 
                     listing["status"] = status
@@ -898,3 +877,209 @@ async def run_scan(
                         break
 
                     del body
+
+                if best_in_stock:
+
+                    current = "IN"
+
+                elif (
+                    inspected_statuses
+                    and all(
+                        status == "OUT"
+                        for status
+                        in inspected_statuses
+                    )
+                ):
+
+                    current = "OUT"
+
+                elif matches:
+
+                    current = "UNKNOWN"
+
+                else:
+
+                    current = "UNKNOWN"
+
+                old = state.get(
+                    key,
+                    "UNKNOWN",
+                )
+
+                print(
+                    retailer,
+                    "|",
+                    product,
+                    "| matches:",
+                    len(matches),
+                    "| status:",
+                    current,
+                )
+
+                # ------------------------------------------------
+                # ALERT ONLY ON TRANSITION TO IN STOCK
+                # ------------------------------------------------
+
+                if (
+                    best_in_stock is not None
+                    and old != "IN"
+                ):
+
+                    send_stock_alert(
+                        product,
+                        retailer,
+                        best_in_stock,
+                    )
+
+                # ------------------------------------------------
+                # SAVE ONLY KNOWN STATES
+                # ------------------------------------------------
+
+                if current != "UNKNOWN":
+
+                    state[key] = current
+
+                    save_state(
+                        state
+                    )
+
+                await asyncio.sleep(
+                    0.5
+                )
+
+        print()
+        print("=" * 70)
+
+        print(
+            "✅ SCAN COMPLETE",
+            time.strftime(
+                "%Y-%m-%d %H:%M:%S"
+            ),
+        )
+
+        print(
+            "⏱ Next scan in",
+            INTERVAL,
+            "seconds",
+        )
+
+        print("=" * 70)
+
+    except Exception as exc:
+
+        print(
+            "🔴 SCAN ERROR:",
+            repr(exc),
+        )
+
+    finally:
+
+        try:
+
+            if page is not None:
+
+                await page.close()
+
+        except Exception:
+
+            pass
+
+        try:
+
+            if context is not None:
+
+                await context.close()
+
+        except Exception:
+
+            pass
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+async def main():
+
+    print("=" * 70)
+
+    print(
+        "🟢 POKÉMON SA "
+        "30TH CELEBRATION STOCK MONITOR"
+    )
+
+    print(
+        "Products:",
+        len(WATCHLIST),
+    )
+
+    print(
+        "Retailers:",
+        ", ".join(
+            RETAILERS.keys()
+        ),
+    )
+
+    print(
+        "Interval:",
+        INTERVAL,
+        "seconds",
+    )
+
+    print(
+        "🎯 ONLY 30TH CELEBRATION "
+        "PRODUCTS ARE ALLOWED"
+    )
+
+    print("=" * 70)
+
+    state = load_state()
+
+    async with async_playwright() as playwright:
+
+        browser = await playwright.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--no-sandbox",
+                "--disable-background-networking",
+                "--disable-background-timer-throttling",
+            ],
+        )
+
+        try:
+
+            while True:
+
+                await run_scan(
+                    browser,
+                    state,
+                )
+
+                print(
+                    "💤 Sleeping for",
+                    INTERVAL,
+                    "seconds...",
+                )
+
+                await asyncio.sleep(
+                    INTERVAL
+                )
+
+        finally:
+
+            print(
+                "🛑 Closing Chromium"
+            )
+
+            await browser.close()
+
+
+# ============================================================
+# START
+# ============================================================
+
+if __name__ == "__main__":
+
+    asyncio.run(main())
