@@ -53,8 +53,6 @@ STOPWORDS = {
     "cards",
     "game",
     "tcg",
-    "30th",
-    "celebration",
     "the",
     "and",
     "for",
@@ -64,51 +62,6 @@ STOPWORDS = {
     "an",
 }
 
-
-# ============================================================
-# STOCK WORDS
-# ============================================================
-
-NEGATIVE_STOCK = (
-    "currently unavailable",
-    "out of stock",
-    "sold out",
-    "not available",
-    "unavailable",
-    "temporarily out of stock",
-    "currently out of stock",
-)
-
-POSITIVE_STOCK = (
-    "in stock",
-    "add to cart",
-    "buy now",
-    "add to basket",
-    "available for delivery",
-    "available to ship",
-    "only 1 left",
-    "only 2 left",
-    "only 3 left",
-    "only 4 left",
-    "only 5 left",
-)
-
-
-# ============================================================
-# MEMORY REDUCTION
-# ============================================================
-
-BLOCKED_RESOURCE_TYPES = {
-    "image",
-    "media",
-    "font",
-    "stylesheet",
-}
-
-
-# ============================================================
-# TEXT HELPERS
-# ============================================================
 
 def norm(value):
     value = (value or "").lower()
@@ -137,58 +90,41 @@ def tokens(value):
     return [
         token
         for token in norm(value).split()
-        if token not in STOPWORDS and len(token) > 1
+        if token not in STOPWORDS
+        and len(token) > 1
     ]
-
-
-def critical_tokens(product_name):
-    """
-    Return the meaningful words that identify the product.
-
-    Example:
-
-    30th Celebration ex Tin Sylveon Greninja
-
-    becomes approximately:
-
-    ex / tin / sylveon / greninja
-    """
-
-    return tokens(product_name)
 
 
 def title_matches(product_name, title):
     """
-    Extremely strict product-title matching.
+    Strict product matching.
 
-    A candidate MUST contain:
+    The candidate title MUST contain:
       - 30th
       - celebration
-      - every meaningful product token
+      - every meaningful product-specific word
 
-    This prevents unrelated Pokémon products from qualifying.
+    This is deliberately strict so a generic Pokémon product
+    can never trigger a 30th Celebration alert.
     """
 
-    product_normalized = norm(product_name)
-    title_normalized = norm(title)
-
     candidate_tokens = set(
-        title_normalized.split()
+        norm(title).split()
     )
 
-    # Absolutely mandatory.
+    # Mandatory 30th Celebration protection.
     for required in REQUIRED_GLOBAL:
         if required not in candidate_tokens:
             return False
 
-    required_tokens = critical_tokens(
-        product_normalized
+    required_tokens = tokens(
+        product_name
     )
 
     if not required_tokens:
         return False
 
-    # Every meaningful product word must appear.
+    # Every meaningful watchlist token must exist.
     for token in required_tokens:
         if token not in candidate_tokens:
             return False
@@ -200,11 +136,35 @@ def title_matches(product_name, title):
 # STOCK DETECTION
 # ============================================================
 
+NEGATIVE_STOCK = (
+    "currently unavailable",
+    "out of stock",
+    "sold out",
+    "not available",
+    "unavailable",
+    "temporarily out of stock",
+    "currently out of stock",
+)
+
+POSITIVE_STOCK = (
+    "in stock",
+    "add to cart",
+    "buy now",
+    "add to basket",
+    "available for delivery",
+    "available to ship",
+    "only 1 left",
+    "only 2 left",
+    "only 3 left",
+    "only 4 left",
+    "only 5 left",
+)
+
+
 def stock_state(text):
     value = norm(text)
 
-    # Check OUT first because some pages can contain both
-    # "In Stock" and "Out of Stock" in hidden/recommendation text.
+    # OUT is checked first.
     if any(
         phrase in value
         for phrase in NEGATIVE_STOCK
@@ -240,7 +200,7 @@ def load_state():
 
     except Exception as exc:
         print(
-            f"WARN | Could not read state.json | {exc}"
+            f"WARN | state read failed | {exc}"
         )
 
     return {}
@@ -248,13 +208,13 @@ def load_state():
 
 def save_state(state):
     """
-    Atomic-ish state save.
-
-    Write to a temporary file first, then replace the
-    existing state file.
+    Save atomically so a Render restart does not easily
+    leave a half-written state.json.
     """
 
-    temp_file = STATE_FILE.with_suffix(".tmp")
+    temp_file = STATE_FILE.with_suffix(
+        ".tmp"
+    )
 
     temp_file.write_text(
         json.dumps(
@@ -268,6 +228,23 @@ def save_state(state):
     temp_file.replace(
         STATE_FILE
     )
+
+
+def normalise_saved_entry(entry):
+    """
+    Supports both the new state format and simple legacy
+    URL/string entries.
+    """
+
+    if isinstance(entry, dict):
+        return entry
+
+    if isinstance(entry, str):
+        return {
+            "url": entry
+        }
+
+    return {}
 
 
 # ============================================================
@@ -294,7 +271,9 @@ def telegram(message):
 
         response.raise_for_status()
 
-        print("TELEGRAM | Alert sent")
+        print(
+            "TELEGRAM | Alert sent"
+        )
 
     except Exception as exc:
         print(
@@ -303,10 +282,28 @@ def telegram(message):
 
 
 # ============================================================
-# TAKEALOT EXTRACTION
+# GENERAL HELPERS
 # ============================================================
 
-def extract_takealot(html, base_url):
+def clean_title(
+    text,
+    limit=700,
+):
+    return re.sub(
+        r"\s+",
+        " ",
+        text or "",
+    ).strip()[:limit]
+
+
+# ============================================================
+# TAKEALOT
+# ============================================================
+
+def extract_takealot(
+    html,
+    base_url,
+):
     soup = BeautifulSoup(
         html,
         "html.parser",
@@ -315,119 +312,40 @@ def extract_takealot(html, base_url):
     results = []
     seen = set()
 
-    for anchor in soup.select(
-        'a[href]'
-    ):
-        href = anchor.get(
-            "href",
-            "",
-        )
-
-        # Takealot product URLs normally contain /product/
-        if "/product/" not in href:
-            continue
-
-        title = anchor.get_text(
-            " ",
-            strip=True,
-        )
-
-        if not title:
-            parent = anchor.find_parent()
-
-            if parent:
-                title = parent.get_text(
-                    " ",
-                    strip=True,
-                )
-
-        title = re.sub(
-            r"\s+",
-            " ",
-            title,
-        ).strip()
-
-        if len(title) < 8:
-            continue
-
-        if len(title) > 500:
-            continue
-
-        url = urljoin(
-            base_url,
-            href.split("?")[0],
-        )
-
-        if url in seen:
-            continue
-
-        seen.add(url)
-
-        results.append(
-            {
-                "title": title,
-                "url": url,
-                "text": title,
-            }
-        )
-
-    return results[:40]
-
-
-# ============================================================
-# CHECKERS EXTRACTION
-# ============================================================
-
-def extract_checkers(html, base_url):
-    soup = BeautifulSoup(
-        html,
-        "html.parser",
+    anchors = soup.select(
+        'a[href*="/product/"]'
     )
 
-    results = []
-    seen = set()
+    for anchor in anchors:
 
-    for anchor in soup.select(
-        'a[href]'
-    ):
         href = anchor.get(
             "href",
             "",
         )
 
-        if not re.search(
-            r"/(products?|product)/",
-            href,
-            re.I,
-        ):
-            continue
-
-        title = anchor.get_text(
-            " ",
-            strip=True,
-        )
-
-        parent = anchor.find_parent()
-
-        if parent:
-            parent_text = parent.get_text(
+        title = clean_title(
+            anchor.get_text(
                 " ",
                 strip=True,
             )
-
-            if len(parent_text) > len(title):
-                title = parent_text
-
-        title = re.sub(
-            r"\s+",
-            " ",
-            title,
-        ).strip()
+        )
 
         if len(title) < 8:
-            continue
 
-        if len(title) > 700:
+            parent = anchor.find_parent()
+
+            if parent:
+                title = clean_title(
+                    parent.get_text(
+                        " ",
+                        strip=True,
+                    )
+                )
+
+        if (
+            len(title) < 8
+            or len(title) > 700
+        ):
             continue
 
         url = urljoin(
@@ -448,14 +366,17 @@ def extract_checkers(html, base_url):
             }
         )
 
-    return results[:40]
+    return results[:60]
 
 
 # ============================================================
-# AMAZON EXTRACTION
+# CHECKERS
 # ============================================================
 
-def extract_amazon(html, base_url):
+def extract_checkers(
+    html,
+    base_url,
+):
     soup = BeautifulSoup(
         html,
         "html.parser",
@@ -464,9 +385,95 @@ def extract_amazon(html, base_url):
     results = []
     seen = set()
 
-    # Amazon search result cards.
+    selectors = [
+        'a[href*="/products/"]',
+        'a[href*="/product/"]',
+    ]
+
+    anchors = []
+
+    for selector in selectors:
+        anchors.extend(
+            soup.select(selector)
+        )
+
+    for anchor in anchors:
+
+        href = anchor.get(
+            "href",
+            "",
+        )
+
+        title = clean_title(
+            anchor.get_text(
+                " ",
+                strip=True,
+            )
+        )
+
+        if len(title) < 8:
+
+            parent = anchor.find_parent()
+
+            if parent:
+                title = clean_title(
+                    parent.get_text(
+                        " ",
+                        strip=True,
+                    )
+                )
+
+        if (
+            len(title) < 8
+            or len(title) > 900
+        ):
+            continue
+
+        url = urljoin(
+            base_url,
+            href.split("?")[0],
+        )
+
+        if url in seen:
+            continue
+
+        seen.add(url)
+
+        results.append(
+            {
+                "title": title,
+                "url": url,
+                "text": title,
+            }
+        )
+
+    return results[:60]
+
+
+# ============================================================
+# AMAZON
+# ============================================================
+
+def extract_amazon(
+    html,
+    base_url,
+):
+    soup = BeautifulSoup(
+        html,
+        "html.parser",
+    )
+
+    results = []
+    seen = set()
+
+    # --------------------------------------------------------
+    # NORMAL AMAZON SEARCH RESULT STRUCTURE
+    # --------------------------------------------------------
+
     cards = soup.select(
-        'div[data-component-type="s-search-result"]'
+        'div[data-component-type="s-search-result"], '
+        'div.s-result-item[data-asin], '
+        'div[data-asin]'
     )
 
     for card in cards:
@@ -483,18 +490,23 @@ def extract_amazon(html, base_url):
         if not link:
             continue
 
-        title = link.get_text(
-            " ",
-            strip=True,
+        title = clean_title(
+            link.get_text(
+                " ",
+                strip=True,
+            )
         )
-
-        if not title:
-            continue
 
         href = link.get(
             "href",
             "",
         )
+
+        if (
+            not title
+            or "/dp/" not in href
+        ):
+            continue
 
         url = urljoin(
             base_url,
@@ -506,24 +518,81 @@ def extract_amazon(html, base_url):
 
         seen.add(url)
 
-        card_text = card.get_text(
-            " ",
-            strip=True,
-        )
-
         results.append(
             {
                 "title": title,
                 "url": url,
-                "text": card_text[:2500],
+                "text": clean_title(
+                    card.get_text(
+                        " ",
+                        strip=True,
+                    ),
+                    2500,
+                ),
             }
         )
 
-    return results[:20]
+    # --------------------------------------------------------
+    # AMAZON FALLBACK
+    #
+    # Some Amazon layouts don't expose the normal search-result
+    # card wrappers. In that case, inspect /dp/ links directly.
+    #
+    # IMPORTANT:
+    # We still DO NOT accept these as matches until
+    # title_matches() approves the title.
+    # --------------------------------------------------------
+
+    if not results:
+
+        for link in soup.select(
+            'a[href*="/dp/"]'
+        ):
+
+            title = clean_title(
+                link.get_text(
+                    " ",
+                    strip=True,
+                )
+            )
+
+            href = link.get(
+                "href",
+                "",
+            )
+
+            if (
+                not title
+                or len(title) < 8
+            ):
+                continue
+
+            url = urljoin(
+                base_url,
+                href.split("?")[0],
+            )
+
+            if url in seen:
+                continue
+
+            seen.add(url)
+
+            results.append(
+                {
+                    "title": title,
+                    "url": url,
+                    "text": title,
+                }
+            )
+
+            if len(results) >= 60:
+                break
+
+    return results[:60]
 
 
 # ============================================================
-# RETAILER DISPATCH
+# RETAILER EXTRACTION
 # ============================================================
 
 def extract_candidates(
@@ -531,6 +600,7 @@ def extract_candidates(
     html,
     base_url,
 ):
+
     if retailer == "Takealot":
         return extract_takealot(
             html,
@@ -553,48 +623,44 @@ def extract_candidates(
 
 
 # ============================================================
-# RANK / FILTER
+# MATCH CANDIDATES
 # ============================================================
 
 def rank_candidates(
     product_name,
     listings,
 ):
-    ranked = []
-
-    for listing in listings:
-
-        # THIS IS THE IMPORTANT SAFETY FILTER.
-        #
-        # If the search result title itself does not exactly
-        # identify the requested 30th Celebration product,
-        # it never reaches the product page.
-        if not title_matches(
+    return [
+        listing
+        for listing in listings
+        if title_matches(
             product_name,
             listing["title"],
-        ):
-            continue
-
-        ranked.append(
-            listing
         )
-
-    return ranked
+    ]
 
 
 # ============================================================
 # PLAYWRIGHT
 # ============================================================
 
+BLOCKED_RESOURCE_TYPES = {
+    "image",
+    "media",
+    "font",
+    "stylesheet",
+}
+
+
 async def block_heavy(route):
+
     if (
         route.request.resource_type
         in BLOCKED_RESOURCE_TYPES
     ):
         await route.abort()
-        return
-
-    await route.continue_()
+    else:
+        await route.continue_()
 
 
 async def goto(
@@ -602,6 +668,7 @@ async def goto(
     url,
     timeout=12000,
 ):
+
     try:
 
         await page.goto(
@@ -616,14 +683,15 @@ async def goto(
 
         print(
             f"WARN | navigation failed | "
-            f"{url} | {type(exc).__name__}"
+            f"{url} | "
+            f"{type(exc).__name__}"
         )
 
         return False
 
 
 # ============================================================
-# DETAIL PAGE CHECK
+# PRODUCT PAGE CHECK
 # ============================================================
 
 async def inspect_detail(
@@ -631,13 +699,6 @@ async def inspect_detail(
     product_name,
     listing,
 ):
-    """
-    Only called after the search-result title has already
-    passed the strict 30th Celebration product match.
-
-    This second check protects against bad retailer search
-    results and lets us determine actual stock.
-    """
 
     if not await goto(
         page,
@@ -647,39 +708,49 @@ async def inspect_detail(
         return "UNKNOWN"
 
     await page.wait_for_timeout(
-        500
+        400
     )
 
-    # Try the actual H1 first.
+    # --------------------------------------------------------
+    # Get actual product title.
+    # --------------------------------------------------------
+
     try:
+
         h1 = await page.locator(
             "h1"
         ).first.text_content(
-            timeout=2000
+            timeout=1500
         )
 
     except Exception:
+
         h1 = ""
 
-    # Fallback to browser title.
     try:
+
         page_title = await page.title()
 
     except Exception:
+
         page_title = ""
 
-    detail_title = (
-        h1
-        or page_title
-        or ""
+    detail_title = clean_title(
+        h1 or page_title
     )
 
-    # The detail page itself must still match the requested
-    # product. If it doesn't, reject it.
+    # --------------------------------------------------------
+    # CRITICAL SAFETY CHECK
+    #
+    # Even if we have a saved URL, it cannot be trusted unless
+    # the actual page still identifies the correct product.
+    # --------------------------------------------------------
+
     if not title_matches(
         product_name,
         detail_title,
     ):
+
         print(
             "WARN | detail title rejected | "
             f"{detail_title[:180]}"
@@ -687,36 +758,41 @@ async def inspect_detail(
 
         return "UNKNOWN"
 
+    # --------------------------------------------------------
+    # Read page text.
+    # --------------------------------------------------------
+
     try:
+
         body = await page.locator(
             "body"
         ).inner_text(
-            timeout=3000
+            timeout=2500
         )
 
     except Exception:
+
         return "UNKNOWN"
 
-    # Only inspect a reasonable amount of text.
-    body_normalized = norm(
-        body[:30000]
+    body = norm(
+        body[:40000]
     )
 
-    # Mandatory protection against generic Pokémon products.
+    # Mandatory 30th Celebration protection.
     if (
-        "30th" not in body_normalized
+        "30th" not in body
         or "celebration"
-        not in body_normalized
+        not in body
     ):
         return "UNKNOWN"
 
     return stock_state(
-        body_normalized
+        body
     )
 
 
 # ============================================================
-# MAIN SCANNER
+# MAIN
 # ============================================================
 
 async def main():
@@ -748,13 +824,15 @@ async def main():
             },
         )
 
-        # Reduce Render memory usage.
+        # Keep memory usage low on Render.
         await context.route(
             "**/*",
             block_heavy,
         )
 
-        # ONE PAGE ONLY.
+        # ONE browser
+        # ONE context
+        # ONE page
         page = await context.new_page()
 
         page.set_default_timeout(
@@ -767,20 +845,61 @@ async def main():
 
                 cycle_start = time.time()
 
+                checks = 0
+
                 print("")
-                print("=" * 60)
+                print(
+                    "=" * 60
+                )
                 print(
                     "STARTING STOCK SCAN"
                 )
-                print("=" * 60)
+                print(
+                    "=" * 60
+                )
 
-                # ------------------------------------------------
-                # PRODUCT LOOP
-                # ------------------------------------------------
+                # ====================================================
+                # ALL WATCHLIST PRODUCTS
+                # ====================================================
 
                 for product in WATCHLIST:
 
+                    # =================================================
+                    # ALL RETAILERS
+                    # =================================================
+
                     for retailer, template in RETAILERS.items():
+
+                        checks += 1
+
+                        key = (
+                            f"{retailer}|{product}"
+                        )
+
+                        # ---------------------------------------------
+                        # LOAD PREVIOUS STATE
+                        # ---------------------------------------------
+
+                        record = normalise_saved_entry(
+                            state.get(
+                                key,
+                                {},
+                            )
+                        )
+
+                        previous = record.get(
+                            "status",
+                            "UNKNOWN",
+                        )
+
+                        known_url = record.get(
+                            "url",
+                            "",
+                        )
+
+                        # ---------------------------------------------
+                        # SEARCH URL
+                        # ---------------------------------------------
 
                         query = quote_plus(
                             product
@@ -792,40 +911,58 @@ async def main():
                             )
                         )
 
-                        # ----------------------------------------
-                        # SEARCH PAGE
-                        # ----------------------------------------
+                        html = ""
 
-                        if not await goto(
+                        listings = []
+
+                        ranked = []
+
+                        # ---------------------------------------------
+                        # SEARCH
+                        #
+                        # Search is primarily for:
+                        #
+                        # 1. Discovering a product URL.
+                        # 2. Discovering a replacement URL.
+                        #
+                        # We NEVER assume "not found" means OUT.
+                        # ---------------------------------------------
+
+                        if await goto(
                             page,
                             search_url,
+                            timeout=12000,
                         ):
-                            continue
 
-                        await page.wait_for_timeout(
-                            900
-                        )
-
-                        try:
-                            html = await page.content()
-
-                        except Exception as exc:
-                            print(
-                                f"WARN | content failed | "
-                                f"{retailer} | {exc}"
+                            await page.wait_for_timeout(
+                                700
                             )
-                            continue
 
-                        listings = extract_candidates(
-                            retailer,
-                            html,
-                            search_url,
-                        )
+                            try:
 
-                        ranked = rank_candidates(
-                            product,
-                            listings,
-                        )
+                                html = await page.content()
+
+                                listings = (
+                                    extract_candidates(
+                                        retailer,
+                                        html,
+                                        search_url,
+                                    )
+                                )
+
+                                ranked = (
+                                    rank_candidates(
+                                        product,
+                                        listings,
+                                    )
+                                )
+
+                            except Exception as exc:
+
+                                print(
+                                    f"WARN | extraction failed | "
+                                    f"{retailer} | {exc}"
+                                )
 
                         print(
                             f"DEBUG | {retailer} | "
@@ -835,93 +972,115 @@ async def main():
                             f"exact={len(ranked)}"
                         )
 
-                        # Nothing that actually matches the
-                        # requested product was found.
-                        if not ranked:
-                            continue
+                        result = "UNKNOWN"
 
-                        best = None
+                        listing = None
 
-                        # Only inspect the first two genuinely
-                        # matching products.
+                        # =================================================
+                        # 1. CHECK EXACT SEARCH RESULTS
+                        # =================================================
+
+                        if ranked:
+
+                            # At most two genuine matches.
+                            #
+                            # Importantly, unrelated Pokémon products
+                            # NEVER reach inspect_detail().
+                            for candidate in ranked[:2]:
+
+                                result = (
+                                    await inspect_detail(
+                                        page,
+                                        product,
+                                        candidate,
+                                    )
+                                )
+
+                                if result in (
+                                    "IN",
+                                    "OUT",
+                                ):
+
+                                    listing = candidate
+
+                                    break
+
+                        # =================================================
+                        # 2. CHECK PREVIOUSLY DISCOVERED PRODUCT URL
                         #
-                        # This is the major difference from the
-                        # old version: unrelated products never
-                        # reach this point.
-                        for listing in ranked[:2]:
+                        # THIS IS THE IMPORTANT NEW FEATURE.
+                        #
+                        # If a product disappears from search because
+                        # it is sold out, we can still monitor its direct
+                        # product page.
+                        # =================================================
 
-                            # First look at stock text already
-                            # present on the search result.
-                            result = stock_state(
-                                listing["text"]
-                            )
+                        if (
+                            result == "UNKNOWN"
+                            and known_url
+                        ):
 
-                            # If search result does not tell us,
-                            # inspect the exact product page.
-                            if result == "UNKNOWN":
+                            known_listing = {
+                                "title": record.get(
+                                    "title",
+                                    product,
+                                ),
+                                "url": known_url,
+                                "text": record.get(
+                                    "title",
+                                    product,
+                                ),
+                            }
 
-                                result = await inspect_detail(
+                            result = (
+                                await inspect_detail(
                                     page,
                                     product,
-                                    listing,
+                                    known_listing,
                                 )
+                            )
 
-                            if result == "IN":
-
-                                best = (
-                                    "IN",
-                                    listing,
-                                )
-
-                                break
-
-                            if (
-                                result == "OUT"
-                                and best is None
+                            if result in (
+                                "IN",
+                                "OUT",
                             ):
 
-                                best = (
-                                    "OUT",
-                                    listing,
+                                listing = (
+                                    known_listing
                                 )
 
-                        # ----------------------------------------
-                        # RESULT
-                        # ----------------------------------------
+                        # =================================================
+                        # FINAL STATUS
+                        # =================================================
 
-                        if best is None:
+                        if result in (
+                            "IN",
+                            "OUT",
+                        ):
 
-                            current = "UNKNOWN"
-                            listing = ranked[0]
+                            current = result
 
                         else:
 
-                            current, listing = best
+                            current = "UNKNOWN"
 
-                        key = (
-                            f"{retailer}|{product}"
-                        )
-
-                        previous = (
-                            state
-                            .get(key, {})
-                            .get(
-                                "status",
-                                "UNKNOWN",
-                            )
-                        )
-
-                        # ------------------------------------------------
+                        # =================================================
+                        # SAVE STATE
+                        #
                         # IMPORTANT:
                         #
-                        # UNKNOWN DOES NOT ERASE STATE.
-                        #
-                        # If Amazon/Takealot/Checkers temporarily fails,
-                        # we don't turn IN into UNKNOWN and then generate
-                        # another alert the next time it becomes IN.
-                        # ------------------------------------------------
+                        # UNKNOWN DOES NOT ERASE A KNOWN URL.
+                        # UNKNOWN DOES NOT TURN OUT INTO UNKNOWN.
+                        # UNKNOWN DOES NOT TRIGGER TELEGRAM.
+                        # =================================================
 
-                        if current != "UNKNOWN":
+                        if (
+                            listing
+                            and current in (
+                                "IN",
+                                "OUT",
+                            )
+                        ):
 
                             state[key] = {
                                 "status": current,
@@ -936,29 +1095,63 @@ async def main():
                                 ),
                             }
 
-                        # ------------------------------------------------
-                        # TELEGRAM ALERT
+                        elif key not in state:
+
+                            state[key] = {
+                                "status": "UNKNOWN",
+                                "title": product,
+                                "url": known_url,
+                                "checked": int(
+                                    time.time()
+                                ),
+                            }
+
+                        # =================================================
+                        # TELEGRAM
                         #
-                        # ONLY:
+                        # ONLY alert when:
                         #
                         # previous != IN
-                        # AND
                         # current == IN
-                        # ------------------------------------------------
+                        #
+                        # Therefore:
+                        #
+                        # OUT -> IN       ALERT
+                        # UNKNOWN -> IN   ALERT
+                        # IN -> IN        NO ALERT
+                        # IN -> UNKNOWN   NO ALERT
+                        # =================================================
 
                         if (
                             current == "IN"
                             and previous != "IN"
                         ):
 
-                            telegram(
-                                "🟢 IN STOCK\n\n"
-                                f"{product}\n"
-                                f"{retailer}\n"
-                                f"{listing['title']}\n\n"
-                                "BUY NOW:\n"
-                                f"{listing['url']}"
+                            alert_title = (
+                                listing["title"]
+                                if listing
+                                else record.get(
+                                    "title",
+                                    product,
+                                )
                             )
+
+                            alert_url = (
+                                listing["url"]
+                                if listing
+                                else known_url
+                            )
+
+                            if alert_url:
+
+                                telegram(
+                                    "🟢 IN STOCK\n\n"
+                                    f"{product}\n"
+                                    f"{retailer}\n"
+                                    f"{alert_title}\n\n"
+                                    "BUY NOW:\n"
+                                    f"{alert_url}"
+                                )
 
                         print(
                             f"{retailer} | "
@@ -971,32 +1164,62 @@ async def main():
                             state
                         )
 
-                # ------------------------------------------------
-                # END OF CYCLE
-                # ------------------------------------------------
+                # ====================================================
+                # END OF SCAN
+                # ====================================================
 
                 elapsed = (
                     time.time()
                     - cycle_start
                 )
 
-                sleep_for = max(
-                    1,
-                    INTERVAL
-                    - int(elapsed),
+                expected_checks = (
+                    len(WATCHLIST)
+                    * len(RETAILERS)
                 )
 
                 print("")
                 print(
                     f"SCAN COMPLETE | "
-                    f"{elapsed:.1f}s | "
-                    f"sleeping {sleep_for}s"
+                    f"checks={checks}/{expected_checks} | "
+                    f"{elapsed:.1f}s"
                 )
-                print("")
 
-                await asyncio.sleep(
-                    sleep_for
+                # ----------------------------------------------------
+                # TIMING
+                #
+                # If the scan takes LESS than 60 seconds:
+                # wait until the 60-second mark.
+                #
+                # If the scan takes MORE than 60 seconds:
+                # start the next scan immediately.
+                #
+                # This means a 2-3 minute scan does NOT get followed
+                # by another unnecessary 60-second wait.
+                # ----------------------------------------------------
+
+                remaining = (
+                    INTERVAL
+                    - elapsed
                 )
+
+                if remaining > 0:
+
+                    print(
+                        f"WAITING | "
+                        f"{remaining:.1f}s"
+                    )
+
+                    await asyncio.sleep(
+                        remaining
+                    )
+
+                else:
+
+                    print(
+                        "NEXT SCAN | "
+                        "starting immediately"
+                    )
 
         finally:
 
