@@ -445,4 +445,4 @@ async def main():
                         print(
                             retailer,
                             product,
-                            "
+                            
