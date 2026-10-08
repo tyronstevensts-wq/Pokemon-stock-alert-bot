@@ -47,24 +47,118 @@ def norm(s):
 def tokens(s):
     return set(norm(s).split())
 
+
 def match_score(target, candidate):
-    """Conservative product-name matching for retailer search results."""
-    t = tokens(target)
-    c = tokens(candidate)
-    meaningful = t - STOP
-    if not meaningful:
-        return 0.0
+    """
+    Strict product matching.
 
-    # Never match a variant to a different named variant.
-    target_variants = t & VARIANTS
-    candidate_variants = c & VARIANTS
-    if target_variants and not target_variants.issubset(candidate_variants):
-        return 0.0
-    if candidate_variants and target_variants and not candidate_variants.issubset(target_variants):
-        return 0.0
+    A listing must:
+    1. Be a 30th Celebration product.
+    2. Match the important product words.
+    3. Match character/variant names where applicable.
+    """
 
-    return len(meaningful & c) / len(meaningful)
+    def normalize(text):
+        text = text.lower()
+        text = text.replace("-", " ")
+        text = text.replace("/", " ")
+        text = text.replace("&", " and ")
+        text = re.sub(r"[^a-z0-9\s]", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
 
+    target_n = normalize(target)
+    candidate_n = normalize(candidate)
+
+    # ---------------------------------------------------------
+    # HARD REQUIREMENT:
+    # The listing MUST be from the 30th Celebration range.
+    # ---------------------------------------------------------
+    if "30th" not in candidate_n:
+        return 0
+
+    if "celebration" not in candidate_n:
+        return 0
+
+    # ---------------------------------------------------------
+    # Important variant/product words.
+    # These MUST match when they appear in the watchlist item.
+    # ---------------------------------------------------------
+    required_variants = [
+        "mewtwo",
+        "umbreon",
+        "espeon",
+        "zapdos",
+        "lucario",
+        "sylveon",
+        "greninja",
+        "ditto",
+    ]
+
+    for variant in required_variants:
+        if variant in target_n and variant not in candidate_n:
+            return 0
+
+    # ---------------------------------------------------------
+    # Important product terms.
+    # ---------------------------------------------------------
+    required_terms = [
+        "elite trainer box",
+        "ultra premium collection",
+        "battle deck",
+        "poster collection",
+        "booster bundle",
+        "knock out collection",
+        "premium collection",
+        "tech sticker collection",
+        "mini tin",
+        "ex tin",
+        "ex box",
+        "2 pack blister",
+        "mega expansion pack",
+    ]
+
+    for term in required_terms:
+        if term in target_n and term not in candidate_n:
+            return 0
+
+    # ---------------------------------------------------------
+    # Token-based similarity for the remaining words.
+    # ---------------------------------------------------------
+    stop_words = {
+        "pokemon",
+        "tcg",
+        "the",
+        "and",
+        "card",
+        "game",
+        "cards",
+    }
+
+    target_tokens = {
+        word for word in target_n.split()
+        if word not in stop_words
+    }
+
+    candidate_tokens = set(candidate_n.split())
+
+    if not target_tokens:
+        return 0
+
+    matched = sum(
+        1 for token in target_tokens
+        if token in candidate_tokens
+    )
+
+    score = matched / len(target_tokens)
+
+    # ---------------------------------------------------------
+    # Require a very strong match.
+    # ---------------------------------------------------------
+    if score < 0.90:
+        return 0
+
+    return score
 def stock_state(text):
     t = norm(text)
     negative = [
